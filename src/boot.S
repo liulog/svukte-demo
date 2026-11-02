@@ -150,7 +150,7 @@ trap_entry:
 # USER_CODE. All instructions are 4 bytes, including the faulting ld/sd.
 .section .user.text,"ax"
 .balign 4096
-.global user_start, user_load, user_store
+.global user_start, user_load, user_store, user_after_exec
 user_start:
     li t3, 0x1122334455667788
     li t4, 0x8877665544332211
@@ -172,9 +172,26 @@ user_store:
     ld t0, 0(a1)
     bnez a2, .Lprotected_store
     bne t0, t3, .Luser_fail
-    j .Luser_pass
+    j .Luser_exec
 .Lprotected_store:
     bne t0, t4, .Luser_fail  # denied store must not change backing memory
+.Luser_exec:
+    # Execute the same X-only physical code page through its low alias first.
+    li a5, 0
+    li t0, 0x15000
+    jalr ra, 0(t0)
+    li t1, 0x5a5
+    bne a5, t1, .Luser_fail
+    # Then call the high alias. With UKTE=1, the first fetch must fault.
+    li a5, 0
+    li t0, 0xffffffd000001000
+    jalr ra, 0(t0)
+user_after_exec:
+    bnez a2, .Lprotected_exec
+    bne a5, t1, .Luser_fail
+    j .Luser_pass
+.Lprotected_exec:
+    bnez a5, .Luser_fail  # the high target must not have executed
 .Luser_pass:
     li a7, 1
     ecall
@@ -182,3 +199,11 @@ user_store:
     li a7, 2
     ecall
 1:  j 1b
+
+# A separate page mapped U=1, X=1, R=W=0 at both high and low user VAs.
+.section .user.exec,"ax"
+.balign 4096
+.global user_exec_target
+user_exec_target:
+    li a5, 0x5a5
+    ret

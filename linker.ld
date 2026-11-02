@@ -19,6 +19,9 @@ SECTIONS
     .user : AT(ADDR(.user) - OFFSET) { KEEP(*(.user.text)) }
     ASSERT(SIZEOF(.user) <= 4096, "user program exceeds one page")
     . = ALIGN(4096);
+    .user_exec : AT(ADDR(.user_exec) - OFFSET) { KEEP(*(.user.exec)) }
+    ASSERT(SIZEOF(.user_exec) <= 4096, "execution target exceeds one page")
+    . = ALIGN(4096);
     .rodata : AT(ADDR(.rodata) - OFFSET) { *(.rodata .rodata.*) }
     . = ALIGN(4096);
     .data : AT(ADDR(.data) - OFFSET) {

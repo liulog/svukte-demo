@@ -10,7 +10,9 @@ const OFFSET: usize = 0xffff_ffc0_0000_0000;
 const USER_CODE: usize = 0x10000;
 const USER_ALIAS: usize = 0x12000;
 const USER_STACK: usize = 0x13000;
+const USER_EXEC_ALIAS: usize = 0x15000;
 const HIGH_PAGE: usize = 0xffff_ffd0_0000_0000;
+const HIGH_EXEC: usize = HIGH_PAGE + 4096;
 const INITIAL: u64 = 0x1122_3344_5566_7788;
 const WRITTEN: u64 = 0x8877_6655_4433_2211;
 const UKTE: usize = 1 << 8;
@@ -38,6 +40,8 @@ extern "C" {
     static user_start: u8;
     static user_load: u8;
     static user_store: u8;
+    static user_after_exec: u8;
+    static user_exec_target: u8;
     fn enter_user(high: usize, low: usize, ukte: usize, pc: usize, sp: usize) -> !;
 }
 
@@ -121,6 +125,11 @@ unsafe fn setup_pages() {
         pte(physical(addr_of!(STACK) as usize), V | R | W | U | A | D),
     );
     entry(
+        addr_of_mut!(LOW_L0),
+        USER_EXEC_ALIAS >> 12,
+        pte(physical(addr_of!(user_exec_target) as usize), V | X | U | A),
+    );
+    entry(
         root,
         (HIGH_PAGE >> 30) & 511,
         pte(physical(addr_of!(HIGH_L1) as usize), V),
@@ -134,6 +143,11 @@ unsafe fn setup_pages() {
         addr_of_mut!(HIGH_L0),
         (HIGH_PAGE >> 12) & 511,
         pte(physical(addr_of!(DATA) as usize), V | R | W | U | A | D),
+    );
+    entry(
+        addr_of_mut!(HIGH_L0),
+        (HIGH_EXEC >> 12) & 511,
+        pte(physical(addr_of!(user_exec_target) as usize), V | X | U | A),
     );
     entry(root, 2, 0); // Remove the boot identity mapping entirely.
     asm!("sfence.vma zero, zero");
@@ -201,6 +215,11 @@ unsafe extern "C" fn kernel_main() -> ! {
     put(" low alias=");
     hex(USER_ALIAS);
     put("\n");
+    put("high U=1 X-only page=");
+    hex(HIGH_EXEC);
+    put(" low execution alias=");
+    hex(USER_EXEC_ALIAS);
+    put("\n");
     set_ukte(false);
     prepare_round();
     enter_user(HIGH_PAGE, USER_ALIAS, 0, USER_CODE, USER_STACK + 4096)
@@ -234,31 +253,43 @@ pub unsafe extern "C" fn handle_trap(frame: &mut TrapFrame) {
     hex(tval);
     put("\n");
     require(status & (1 << 8) == 0, "unexpected S-mode trap");
-    if cause == 13 || cause == 15 {
+    if cause == 12 || cause == 13 || cause == 15 {
         require(ROUND == 1, "page fault with UKTE disabled");
-        let (expected_cause, expected_pc) = match FAULTS {
-            0 => (13, user_pc(addr_of!(user_load))),
-            1 => (15, user_pc(addr_of!(user_store))),
+        let (expected_cause, expected_pc, expected_address) = match FAULTS {
+            0 => (13, user_pc(addr_of!(user_load)), HIGH_PAGE),
+            1 => (15, user_pc(addr_of!(user_store)), HIGH_PAGE),
+            2 => (12, HIGH_EXEC, HIGH_EXEC),
             _ => fail("extra page fault"),
         };
         require(
-            cause == expected_cause && epc == expected_pc && tval == HIGH_PAGE,
+            cause == expected_cause && epc == expected_pc && tval == expected_address,
             "wrong fault cause, PC, or address",
         );
         require(data() == WRITTEN, "denied access changed data");
         FAULTS += 1;
-        put(if cause == 13 {
-            "[OK] UKTE blocked high load (13)\n"
+        let resume_pc = if cause == 12 {
+            let return_pc = user_pc(addr_of!(user_after_exec));
+            require(frame.regs[1] == return_pc, "wrong execution return PC");
+            require(frame.regs[15] == 0, "denied high code executed");
+            put("[OK] UKTE blocked high execution (12)\n");
+            // Fetch fault sepc points into the high page, so resume at the
+            // known low caller continuation, rather than skipping high code.
+            return_pc
         } else {
-            "[OK] UKTE blocked high store (15)\n"
-        });
-        asm!("csrw sepc, {pc}", pc = in(reg) epc + 4);
+            put(if cause == 13 {
+                "[OK] UKTE blocked high load (13)\n"
+            } else {
+                "[OK] UKTE blocked high store (15)\n"
+            });
+            epc + 4
+        };
+        asm!("csrw sepc, {pc}", pc = in(reg) resume_pc);
         return;
     }
     require(cause == 8, "unexpected exception (expected U ecall)");
     require(frame.regs[17] == 1, "U-mode data comparison failed");
     let protected = ROUND == 1;
-    require(FAULTS == if protected { 2 } else { 0 }, "wrong fault count");
+    require(FAULTS == if protected { 3 } else { 0 }, "wrong fault count");
     require(
         data() == if protected { WRITTEN } else { INITIAL },
         "wrong final data",
@@ -267,6 +298,11 @@ pub unsafe extern "C" fn handle_trap(frame: &mut TrapFrame) {
         0 => "[OK] baseline U-mode high read/write succeeded\n",
         1 => "[OK] protected U-mode low alias read/write succeeded\n",
         _ => "[OK] restored U-mode high read/write succeeded\n",
+    });
+    put(match ROUND {
+        0 => "[OK] baseline U-mode high execution succeeded\n",
+        1 => "[OK] protected U-mode low execution alias succeeded\n",
+        _ => "[OK] restored U-mode high execution succeeded\n",
     });
     if ROUND == 2 {
         put("[PASS] Svukte MVP: all 3 rounds passed\n");

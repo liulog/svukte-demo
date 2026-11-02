@@ -11,12 +11,16 @@ CHECKS = (
     "[OK] Sv39 high kernel; boot identity mapping removed",
     "[ROUND] UKTE=0 baseline",
     "[OK] baseline U-mode high read/write succeeded",
+    "[OK] baseline U-mode high execution succeeded",
     "[ROUND] UKTE=1 protected",
     "[OK] UKTE blocked high load (13)",
     "[OK] UKTE blocked high store (15)",
+    "[OK] UKTE blocked high execution (12)",
     "[OK] protected U-mode low alias read/write succeeded",
+    "[OK] protected U-mode low execution alias succeeded",
     "[ROUND] UKTE=0 restored",
     "[OK] restored U-mode high read/write succeeded",
+    "[OK] restored U-mode high execution succeeded",
     "[PASS] Svukte MVP: all 3 rounds passed",
 )
 UNAVAILABLE = "[FAIL] UKTE unavailable: senvcfg.UKTE readback is zero"
@@ -28,6 +32,7 @@ def validate(output, negative):
         return (
             UNAVAILABLE in output
             and CHECKS[2] in output
+            and "[OK] baseline U-mode high execution succeeded" in output
             and output.count("[FAIL]") == 1
             and "[PASS]" not in output
         )
@@ -42,6 +47,7 @@ def validate(output, negative):
     return (
         output.count("[OK] UKTE blocked high load (13)") == 1
         and output.count("[OK] UKTE blocked high store (15)") == 1
+        and output.count("[OK] UKTE blocked high execution (12)") == 1
         and output.count("[OK] S-mode high U-page read/write with SUM=1") == 3
     )
 
